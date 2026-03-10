@@ -126,11 +126,10 @@ class LossFreeRouter(torch.nn.Module):
         # Hyperparameters for bias dynamics. Scale update speed inversely with
         # the number of experts so that per-expert bias magnitude stays roughly
         # constant across different granularities.
-        self.bias_update_speed = getattr(
-            args, 'moe_bias_update_speed',
-            0.01 / args.moe_num_experts)
-        self.ema_decay = getattr(args, 'moe_load_ema_decay', 0.99)
-        self.max_bias = getattr(args, 'moe_max_bias', 10.0)
+        default_speed = 0.01 / args.moe_num_experts
+        self.bias_update_speed = getattr(args, 'moe_bias_update_speed', None) or default_speed
+        self.ema_decay = getattr(args, 'moe_load_ema_decay', None) or 0.99
+        self.max_bias = getattr(args, 'moe_max_bias', None) or 10.0
 
     def jitter(self, x):
         low = 1.0 - self.args.moe_jitter_eps
