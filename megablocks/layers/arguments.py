@@ -55,6 +55,9 @@ class Arguments:
     init_method : InitFn =  partial(torch.nn.init.normal_, mean=0.0, std=0.02)
     output_layer_init_method : InitFn = init_method
 
+    # Routing strategy: "learned" (standard) or "random" (uniform assignment).
+    moe_routing_type : str = 'learned'
+
     # Benchmarking arguments.
     uniform_expert_assignment : bool = False
 

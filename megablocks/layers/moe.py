@@ -450,8 +450,12 @@ class ParallelMLP(torch.nn.Module):
         # Compute the experts.
         x, tokens_per_expert = self.forward_fn(
             x, expert_weights, top_experts)
-        if self.training and self.args.moe_loss_weight > 0:
+
+        # Skip LB loss for random routing (no learned router to balance).
+        routing_type = getattr(self.args, 'moe_routing_type', 'learned')
+        if self.training and self.args.moe_loss_weight > 0 and routing_type != 'random':
             save_load_balancing_loss((tokens_per_expert, scores, logits))
+
         x = x.view(in_shape)
         if self.bias is not None:
             if self.args.return_bias:
@@ -501,13 +505,32 @@ class ParallelMLP(torch.nn.Module):
         x_out = torch.einsum('bek...,bsek->bs...', x_e, combine_array)
         return x_out                
 
+def _build_router(args: Arguments):
+    """Factory function for routing strategy selection.
+
+    Args:
+        args: MoE configuration. Uses ``args.moe_routing_type`` to select:
+            - ``"learned"``: Standard learned top-k router (LearnedRouter).
+            - ``"random"``: Uniform random assignment baseline (RandomRouter).
+    """
+    routing_type = getattr(args, 'moe_routing_type', 'learned')
+    if routing_type == 'learned':
+        return router.LearnedRouter(args)
+    elif routing_type == 'random':
+        return router.RandomRouter(args)
+    else:
+        raise ValueError(
+            f"Unknown moe_routing_type: '{routing_type}'. "
+            f"Expected one of: 'learned', 'random'.")
+
+
 class MoE(torch.nn.Module):
 
     def __init__(self, args : Arguments):
         super(MoE, self).__init__()
 
-        # Token router.
-        self.router = router.LearnedRouter(args)
+        # Token router (selected by args.moe_routing_type).
+        self.router = _build_router(args)
 
         # Expert computation helper.
         self.experts = self._init_experts_mlp(args)

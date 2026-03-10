@@ -79,3 +79,57 @@ class LearnedRouter(torch.nn.Module):
             if self.args.uniform_expert_assignment else expert_indices
         )
         return scores, logits, expert_weights, expert_indices
+
+
+class RandomRouter(torch.nn.Module):
+    """Uniform random token-to-expert assignment.
+
+    Bypasses the learned router entirely: each token is assigned to top-k
+    experts sampled uniformly at random (without replacement). Expert weights
+    are set to 1/k so that each selected expert contributes equally.
+
+    This serves as an ablation baseline to isolate the contribution of learned
+    routing to scaling dynamics and expert specialization.
+    """
+
+    def __init__(self, args: Arguments):
+        super().__init__()
+        self.args = args
+
+        # Keep the projection layer for state_dict compatibility when loading
+        # a pretrained checkpoint for analysis, but it is never used in forward.
+        self.layer = torch.nn.Linear(
+            args.hidden_size,
+            args.moe_num_experts,
+            bias=False,
+            dtype=common.dtype(args),
+            device=args.device)
+
+    def _top_k(self, scores):
+        if self.args.moe_top_k == 1:
+            return scores.max(dim=-1, keepdim=True)
+        return torch.topk(scores, self.args.moe_top_k, dim=-1)
+
+    def forward(self, x):
+        T = x.view(-1, x.shape[-1]).shape[0]
+        E = self.args.moe_num_experts
+        K = self.args.moe_top_k
+
+        # Sample K experts per token uniformly without replacement.
+        # argsort of random values is an efficient GPU-vectorized permutation.
+        expert_indices = torch.argsort(
+            torch.rand(T, E, device=x.device), dim=-1
+        )[:, :K]  # [T, K]
+
+        # Uniform weights: each selected expert contributes equally.
+        expert_weights = torch.full(
+            (T, K), 1.0 / K, device=x.device, dtype=x.dtype)
+
+        # Dummy scores and logits for interface compatibility.
+        # scores: uniform distribution (no routing signal).
+        # logits: zeros (no z-loss contribution desired).
+        scores = torch.full(
+            (T, E), 1.0 / E, device=x.device, dtype=x.dtype)
+        logits = torch.zeros(T, E, device=x.device, dtype=x.dtype)
+
+        return scores, logits, expert_weights, expert_indices
