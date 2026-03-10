@@ -55,6 +55,18 @@ class Arguments:
     init_method : InitFn =  partial(torch.nn.init.normal_, mean=0.0, std=0.02)
     output_layer_init_method : InitFn = init_method
 
+    # Routing strategy: "learned" (standard), "loss_free" (auxiliary-loss-free
+    # additive bias), or "random" (uniform random assignment baseline).
+    moe_routing_type : str = 'learned'
+
+    # Loss-free routing hyperparameters (only used when moe_routing_type == "loss_free").
+    # bias_update_speed: step size for bias updates; defaults to 0.01 / moe_num_experts.
+    # load_ema_decay: EMA decay for smoothing expert load signal.
+    # max_bias: hard clamp on bias magnitude for numerical safety.
+    moe_bias_update_speed : Optional[float] = None
+    moe_load_ema_decay : float = 0.99
+    moe_max_bias : float = 10.0
+
     # Benchmarking arguments.
     uniform_expert_assignment : bool = False
 

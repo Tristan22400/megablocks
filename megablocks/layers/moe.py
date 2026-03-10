@@ -450,8 +450,16 @@ class ParallelMLP(torch.nn.Module):
         # Compute the experts.
         x, tokens_per_expert = self.forward_fn(
             x, expert_weights, top_experts)
-        if self.training and self.args.moe_loss_weight > 0:
-            save_load_balancing_loss((tokens_per_expert, scores, logits))
+
+        # Save routing statistics for loss computation and/or bias updates.
+        # For 'loss_free' routing we still need tokens_per_expert to update
+        # the bias; the LB loss value is simply not added to the objective
+        # (handled in the training loop). For 'random' routing, skip entirely.
+        routing_type = getattr(self.args, 'moe_routing_type', 'learned')
+        if self.training and routing_type != 'random':
+            if self.args.moe_loss_weight > 0 or routing_type == 'loss_free':
+                save_load_balancing_loss((tokens_per_expert, scores, logits))
+
         x = x.view(in_shape)
         if self.bias is not None:
             if self.args.return_bias:
@@ -501,13 +509,39 @@ class ParallelMLP(torch.nn.Module):
         x_out = torch.einsum('bek...,bsek->bs...', x_e, combine_array)
         return x_out                
 
+def _build_router(args: Arguments):
+    """Factory function for routing strategy selection.
+
+    Args:
+        args: MoE configuration. Uses ``args.moe_routing_type`` to select:
+            - ``"learned"``: Standard learned top-k router (LearnedRouter).
+            - ``"loss_free"``: Auxiliary-loss-free router with additive bias
+              (LossFreeRouter). See Wang et al. (2024).
+            - ``"random"``: Uniform random assignment baseline (RandomRouter).
+
+    Returns:
+        An instantiated router module.
+    """
+    routing_type = getattr(args, 'moe_routing_type', 'learned')
+    if routing_type == 'learned':
+        return router.LearnedRouter(args)
+    elif routing_type == 'loss_free':
+        return router.LossFreeRouter(args)
+    elif routing_type == 'random':
+        return router.RandomRouter(args)
+    else:
+        raise ValueError(
+            f"Unknown moe_routing_type: '{routing_type}'. "
+            f"Expected one of: 'learned', 'loss_free', 'random'.")
+
+
 class MoE(torch.nn.Module):
 
     def __init__(self, args : Arguments):
         super(MoE, self).__init__()
 
-        # Token router.
-        self.router = router.LearnedRouter(args)
+        # Token router (selected by args.moe_routing_type).
+        self.router = _build_router(args)
 
         # Expert computation helper.
         self.experts = self._init_experts_mlp(args)
@@ -530,6 +564,16 @@ class MoE(torch.nn.Module):
 
         # Compute the experts.
         out = self.experts(x, scores, logits, expert_weights, top_experts)
+
+        # For loss-free routing, update the additive bias using the observed
+        # token-to-expert distribution. The bias is detached from the graph
+        # so this has no effect on gradients.
+        if (self.training
+                and hasattr(self.router, 'update_bias')
+                and len(_LOAD_BALANCING_LOSS) > 0):
+            tokens_per_expert = _LOAD_BALANCING_LOSS[-1][0]
+            self.router.update_bias(tokens_per_expert.clone())
+
         if self.shared_expert is not None:
             shared_expert_out = self.shared_expert(x)
             out = self.shared_expert.add_experts_sharedexpert(shared_expert_out, out)
