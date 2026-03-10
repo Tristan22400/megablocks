@@ -29,7 +29,11 @@ def clear_load_balancing_loss():
 
 
 def batched_load_balancing_loss(args : Arguments):
+    # When zloss is enabled, the caller expects a (lb_loss, zloss) tuple.
+    # Return consistent types even when moe_loss_weight is zero.
     if args.moe_loss_weight == 0:
+        if hasattr(args, 'moe_zloss_weight') and args.moe_zloss_weight:
+            return 0.0, 0.0
         return 0.0
 
     # tokens_per_expert[i].shape = (num_experts)
