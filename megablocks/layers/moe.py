@@ -501,13 +501,28 @@ class ParallelMLP(torch.nn.Module):
         x_out = torch.einsum('bek...,bsek->bs...', x_e, combine_array)
         return x_out                
 
+def _build_router(args: Arguments):
+    """Factory function for routing strategy selection.
+
+    For the auxiliary-loss baseline, only the standard LearnedRouter is used.
+    The moe_routing_type field exists for config compatibility across branches.
+    """
+    routing_type = getattr(args, 'moe_routing_type', 'learned')
+    if routing_type != 'learned':
+        raise ValueError(
+            f"This branch only supports moe_routing_type='learned', "
+            f"got '{routing_type}'. Use the appropriate branch for other "
+            f"routing strategies.")
+    return router.LearnedRouter(args)
+
+
 class MoE(torch.nn.Module):
 
     def __init__(self, args : Arguments):
         super(MoE, self).__init__()
 
-        # Token router.
-        self.router = router.LearnedRouter(args)
+        # Token router (standard learned router with auxiliary loss).
+        self.router = _build_router(args)
 
         # Expert computation helper.
         self.experts = self._init_experts_mlp(args)

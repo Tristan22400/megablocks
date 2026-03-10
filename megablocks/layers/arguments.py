@@ -55,6 +55,10 @@ class Arguments:
     init_method : InitFn =  partial(torch.nn.init.normal_, mean=0.0, std=0.02)
     output_layer_init_method : InitFn = init_method
 
+    # Routing strategy: "learned" uses the standard LearnedRouter with
+    # auxiliary load balancing loss. Other values are defined in other branches.
+    moe_routing_type : str = 'learned'
+
     # Benchmarking arguments.
     uniform_expert_assignment : bool = False
 
