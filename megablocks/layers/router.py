@@ -123,12 +123,11 @@ class LossFreeRouter(torch.nn.Module):
             torch.zeros(args.moe_num_experts, device=args.device,
                         dtype=torch.float32))
 
-        # Hyperparameters for bias dynamics. Scale update speed inversely with
-        # the number of experts so that per-expert bias magnitude stays roughly
-        # constant across different granularities.
-        default_speed = 0.01 / args.moe_num_experts
+        # Hyperparameters for bias dynamics.
+        default_speed = 0.01
         self.bias_update_speed = getattr(args, 'moe_bias_update_speed', None) or default_speed
-        self.ema_decay = getattr(args, 'moe_load_ema_decay', None) or 0.99
+        self.ema_decay = getattr(args, 'moe_load_ema_decay', None) or 0.9
+        self.sign_only = getattr(args, 'moe_bias_update_sign_only', True)
         self.max_bias = getattr(args, 'moe_max_bias', None) or 10.0
 
     def jitter(self, x):
@@ -178,17 +177,16 @@ class LossFreeRouter(torch.nn.Module):
     def update_bias(self, tokens_per_expert: torch.Tensor):
         """Update the expert bias based on observed token distribution.
 
-        Called after each forward pass. Uses an EMA of expert load fractions to
-        smoothly adjust the bias: increase for underused experts, decrease for
-        overused experts.
+        Called after each forward pass (Algorithm 1, Wang et al. 2024).
+        Uses sign(error) to adjust the bias: +u for underused experts,
+        -u for overused experts. This gives dead experts the same correction
+        magnitude as merely-underloaded ones, enabling faster rescue.
 
         Args:
             tokens_per_expert: [E] tensor of token counts per expert.
         """
         # All-reduce token counts across distributed workers so that all ranks
-        # compute identical bias updates and stay synchronized. The cost is
-        # negligible: one all-reduce of an E-dimensional vector (~32 bytes for
-        # E=8) per MoE layer per forward pass.
+        # compute identical bias updates and stay synchronized.
         if dist.is_initialized() and dist.get_world_size() > 1:
             dist.all_reduce(tokens_per_expert, op=dist.ReduceOp.SUM)
 
@@ -200,21 +198,23 @@ class LossFreeRouter(torch.nn.Module):
         load_fraction = tokens_per_expert.float() / total
 
         # Smooth with EMA to filter per-batch noise. Effective window is
-        # ~1/(1 - ema_decay) steps, e.g. 100 steps for decay=0.99.
+        # ~1/(1 - ema_decay) steps, e.g. 10 steps for decay=0.9.
         self.expert_load_ema.mul_(self.ema_decay).add_(
             load_fraction, alpha=1.0 - self.ema_decay)
 
-        # Target: uniform distribution = 1/E.
-        uniform = 1.0 / self.args.moe_num_experts
+        # Load violation error: e_i = expected_load - actual_load.
+        # Positive → expert is underused, negative → overused.
+        error = 1.0 / self.args.moe_num_experts - self.expert_load_ema
 
-        # Increase bias for underused experts (EMA < uniform),
-        # decrease for overused experts (EMA > uniform).
-        self.expert_bias.add_(
-            uniform - self.expert_load_ema,
-            alpha=self.bias_update_speed)
+        # Algorithm 1: b_i = b_i + u * sign(e_i)
+        # sign() gives dead experts (error ≈ +0.125) the same update
+        # magnitude as merely-underloaded ones (error ≈ +0.01).
+        if self.sign_only:
+            self.expert_bias.add_(error.sign(), alpha=self.bias_update_speed)
+        else:
+            self.expert_bias.add_(error, alpha=self.bias_update_speed)
 
-        # Clamp to prevent unbounded growth (z-loss also helps, but this
-        # provides a hard safety bound).
+        # Clamp to prevent unbounded growth.
         self.expert_bias.clamp_(-self.max_bias, self.max_bias)
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata,
