@@ -60,18 +60,11 @@ class Arguments:
     moe_routing_type : str = 'learned'
 
     # Loss-free routing hyperparameters (only used when moe_routing_type == "loss_free").
-    # bias_update_speed: step size u for bias updates (Algorithm 1, Wang et al. 2024).
-    #   Paper uses u ∈ {1e-4, 1e-3} for 1B-3B models on 100B+ tokens.
-    #   Default 0.01 is more aggressive — appropriate for short training runs.
-    # load_ema_decay: EMA decay for smoothing expert load signal.
-    #   0.9 → ~10-step window (responsive). 0.99 → ~100-step window (smooth).
-    # bias_update_sign_only: if True, use sign(error) instead of proportional
-    #   error (matches Algorithm 1 exactly). Faster rescue of dead experts.
-    # max_bias: hard clamp on bias magnitude for numerical safety.
+    # Algorithm 1, Wang et al. 2024:
+    #   b[i] += u * (c_avg - c[i])  for softmax gates (proportional error)
+    #   b[i] += u * sign(e[i])      for sigmoid gates (sign error)
+    # bias_update_speed: step size u. Paper optimal: u = 0.001.
     moe_bias_update_speed : Optional[float] = None
-    moe_load_ema_decay : float = 0.99
-    moe_bias_update_sign_only : bool = True
-    moe_max_bias : float = 10.0
 
     # Benchmarking arguments.
     uniform_expert_assignment : bool = False

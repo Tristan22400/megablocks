@@ -117,20 +117,10 @@ class LossFreeRouter(torch.nn.Module):
             torch.zeros(args.moe_num_experts, device=args.device,
                         dtype=torch.float32))
 
-        # Exponential moving average of per-expert load fractions.
-        self.register_buffer(
-            'expert_load_ema',
-            torch.zeros(args.moe_num_experts, device=args.device,
-                        dtype=torch.float32))
-
-        # Hyperparameters for bias dynamics.
+        # Bias update rate u (Algorithm 1, Wang et al. 2024).
+        # Paper optimal: u = 0.001. For softmax gates, use proportional error.
         speed = getattr(args, 'moe_bias_update_speed', None)
-        self.bias_update_speed = speed if speed is not None else 0.01
-        decay = getattr(args, 'moe_load_ema_decay', None)
-        self.ema_decay = decay if decay is not None else 0.99
-        self.sign_only = getattr(args, 'moe_bias_update_sign_only', True)
-        max_b = getattr(args, 'moe_max_bias', None)
-        self.max_bias = max_b if max_b is not None else 10.0
+        self.bias_update_speed = speed if speed is not None else 0.001
 
     def jitter(self, x):
         low = 1.0 - self.args.moe_jitter_eps
@@ -177,12 +167,10 @@ class LossFreeRouter(torch.nn.Module):
 
     @torch.no_grad()
     def update_bias(self, tokens_per_expert: torch.Tensor):
-        """Update the expert bias based on observed token distribution.
+        """Update expert bias from batch load (Algorithm 1, Wang et al. 2024).
 
-        Called after each forward pass (Algorithm 1, Wang et al. 2024).
-        Uses sign(error) to adjust the bias: +u for underused experts,
-        -u for overused experts. This gives dead experts the same correction
-        magnitude as merely-underloaded ones, enabling faster rescue.
+        For softmax gates: b[i] += u * (c_avg - c[i]) using raw token counts.
+        No EMA — the bias reacts directly to the completed batch.
 
         Args:
             tokens_per_expert: [E] tensor of token counts per expert.
@@ -196,34 +184,21 @@ class LossFreeRouter(torch.nn.Module):
         if total == 0:
             return
 
-        # Fractional load per expert, sums to 1.
-        load_fraction = tokens_per_expert.float() / total
+        # Error on raw counts: e[i] = c_avg - c[i].
+        c = tokens_per_expert.float()
+        c_avg = total.float() / self.args.moe_num_experts
+        error = c_avg - c
 
-        # Smooth with EMA to filter per-batch noise. Effective window is
-        # ~1/(1 - ema_decay) steps, e.g. 10 steps for decay=0.9.
-        self.expert_load_ema.mul_(self.ema_decay).add_(
-            load_fraction, alpha=1.0 - self.ema_decay)
-
-        # Load violation error: e_i = expected_load - actual_load.
-        # Positive → expert is underused, negative → overused.
-        error = 1.0 / self.args.moe_num_experts - self.expert_load_ema
-
-        # Algorithm 1: b_i = b_i + u * sign(e_i)
-        # sign() gives dead experts (error ≈ +0.125) the same update
-        # magnitude as merely-underloaded ones (error ≈ +0.01).
-        if self.sign_only:
-            self.expert_bias.add_(error.sign(), alpha=self.bias_update_speed)
-        else:
-            self.expert_bias.add_(error, alpha=self.bias_update_speed)
-
-        # Clamp to prevent unbounded growth.
-        self.expert_bias.clamp_(-self.max_bias, self.max_bias)
+        # Softmax gate: proportional update b[i] += u * e[i].
+        # No clamp — the proportional error is self-correcting: as bias grows,
+        # the expert attracts more tokens → error shrinks → updates slow down.
+        self.expert_bias.add_(error, alpha=self.bias_update_speed)
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata,
                               strict, missing_keys, unexpected_keys,
                               error_msgs):
         """Handle loading checkpoints from LearnedRouter (missing buffers)."""
-        for buf_name in ('expert_bias', 'expert_load_ema'):
+        for buf_name in ('expert_bias',):
             key = prefix + buf_name
             if key not in state_dict:
                 state_dict[key] = torch.zeros(
