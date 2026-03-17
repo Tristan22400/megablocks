@@ -575,7 +575,16 @@ class MoE(torch.nn.Module):
                 and hasattr(self.router, 'update_bias')
                 and len(_LOAD_BALANCING_LOSS) > 0):
             tokens_per_expert = _LOAD_BALANCING_LOSS[-1][0]
-            self.router.update_bias(tokens_per_expert.clone())
+            if getattr(self.router, '_profile_update_bias', False):
+                import time as _time
+                torch.cuda.synchronize()
+                _t0 = _time.perf_counter()
+                self.router.update_bias(tokens_per_expert.clone())
+                torch.cuda.synchronize()
+                _t1 = _time.perf_counter()
+                self.router._last_update_bias_ms = (_t1 - _t0) * 1000
+            else:
+                self.router.update_bias(tokens_per_expert.clone())
 
         if self.shared_expert is not None:
             shared_expert_out = self.shared_expert(x)

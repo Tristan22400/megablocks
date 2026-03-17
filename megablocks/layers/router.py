@@ -122,6 +122,10 @@ class LossFreeRouter(torch.nn.Module):
         speed = getattr(args, 'moe_bias_update_speed', None)
         self.bias_update_speed = speed if speed is not None else 0.001
 
+        # Profiling: set _profile_update_bias = True to measure update_bias timing.
+        self._profile_update_bias = False
+        self._last_update_bias_ms = 0.0
+
     def jitter(self, x):
         low = 1.0 - self.args.moe_jitter_eps
         high = 1.0 + self.args.moe_jitter_eps
