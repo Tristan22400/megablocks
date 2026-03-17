@@ -88,9 +88,9 @@ class LossFreeRouter(torch.nn.Module):
     Implements the method from Wang et al. (2024), "Auxiliary-Loss-Free Load
     Balancing Strategy for Mixture-of-Experts". An expert-wise additive bias is
     applied to routing logits before top-k selection to steer tokens toward
-    underused experts. The bias is dynamically updated via an EMA of expert
-    load and is detached from the computation graph so that it produces zero
-    interference gradients on the learned router weights.
+    underused experts. The bias is updated each batch using raw token counts
+    (b[i] += u * (c_avg - c[i])) and is detached from the computation graph
+    so that it produces zero interference gradients on the learned router weights.
 
     Reference: https://arxiv.org/abs/2408.15664
     """
