@@ -69,7 +69,7 @@ class Arguments:
     #   error (matches Algorithm 1 exactly). Faster rescue of dead experts.
     # max_bias: hard clamp on bias magnitude for numerical safety.
     moe_bias_update_speed : Optional[float] = None
-    moe_load_ema_decay : float = 0.9
+    moe_load_ema_decay : float = 0.99
     moe_bias_update_sign_only : bool = True
     moe_max_bias : float = 10.0
 

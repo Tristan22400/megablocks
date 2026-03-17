@@ -127,7 +127,7 @@ class LossFreeRouter(torch.nn.Module):
         speed = getattr(args, 'moe_bias_update_speed', None)
         self.bias_update_speed = speed if speed is not None else 0.01
         decay = getattr(args, 'moe_load_ema_decay', None)
-        self.ema_decay = decay if decay is not None else 0.9
+        self.ema_decay = decay if decay is not None else 0.99
         self.sign_only = getattr(args, 'moe_bias_update_sign_only', True)
         max_b = getattr(args, 'moe_max_bias', None)
         self.max_bias = max_b if max_b is not None else 10.0
