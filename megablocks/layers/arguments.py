@@ -59,6 +59,10 @@ class Arguments:
     # additive bias), or "random" (uniform random assignment baseline).
     moe_routing_type : str = 'learned'
 
+    # Gate function for routing: "softmax" or "sigmoid".
+    # Softmax: experts compete (scores sum to 1). Sigmoid: independent gates.
+    moe_gate_type : str = 'softmax'
+
     # Loss-free routing hyperparameters (only used when moe_routing_type == "loss_free").
     # Algorithm 1, Wang et al. 2024:
     #   b[i] += u * (c_avg - c[i])  for softmax gates (proportional error)

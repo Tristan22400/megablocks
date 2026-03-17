@@ -88,9 +88,9 @@ class LossFreeRouter(torch.nn.Module):
     Implements the method from Wang et al. (2024), "Auxiliary-Loss-Free Load
     Balancing Strategy for Mixture-of-Experts". An expert-wise additive bias is
     applied to routing logits before top-k selection to steer tokens toward
-    underused experts. The bias is updated each batch using raw token counts
-    (b[i] += u * (c_avg - c[i])) and is detached from the computation graph
-    so that it produces zero interference gradients on the learned router weights.
+    underused experts. Supports both softmax and sigmoid gating:
+      - Softmax: scores = softmax(logits + bias), update uses proportional error
+      - Sigmoid: scores = sigmoid(logits + bias), update uses sign(error)
 
     Reference: https://arxiv.org/abs/2408.15664
     """
@@ -98,6 +98,11 @@ class LossFreeRouter(torch.nn.Module):
     def __init__(self, args: Arguments):
         super().__init__()
         self.args = args
+
+        # Gate type: "softmax" (experts compete) or "sigmoid" (independent gates).
+        self.gate_type = getattr(args, 'moe_gate_type', 'softmax')
+        assert self.gate_type in ('softmax', 'sigmoid'), (
+            f"Unknown gate type: {self.gate_type!r}. Must be 'softmax' or 'sigmoid'.")
 
         # Learned routing projection (identical to LearnedRouter).
         self.layer = torch.nn.Linear(
@@ -118,7 +123,7 @@ class LossFreeRouter(torch.nn.Module):
                         dtype=torch.float32))
 
         # Bias update rate u (Algorithm 1, Wang et al. 2024).
-        # Paper optimal: u = 0.001. For softmax gates, use proportional error.
+        # Paper optimal: u = 0.001.
         speed = getattr(args, 'moe_bias_update_speed', None)
         self.bias_update_speed = speed if speed is not None else 0.001
 
@@ -150,7 +155,10 @@ class LossFreeRouter(torch.nn.Module):
         biased_logits = logits + self.expert_bias.detach().to(logits.dtype)
 
         # Route using biased logits.
-        scores = biased_logits.softmax(dim=-1)
+        if self.gate_type == 'sigmoid':
+            scores = biased_logits.sigmoid()
+        else:
+            scores = biased_logits.softmax(dim=-1)
         expert_weights, expert_indices = self._top_k(scores)
 
         if self.args.moe_normalize_expert_weights:
@@ -173,8 +181,8 @@ class LossFreeRouter(torch.nn.Module):
     def update_bias(self, tokens_per_expert: torch.Tensor):
         """Update expert bias from batch load (Algorithm 1, Wang et al. 2024).
 
-        For softmax gates: b[i] += u * (c_avg - c[i]) using raw token counts.
-        No EMA — the bias reacts directly to the completed batch.
+        - Softmax gates: b[i] += u * (c_avg - c[i])  (proportional error)
+        - Sigmoid gates: b[i] += u * sign(c_avg - c[i])  (sign error)
 
         Args:
             tokens_per_expert: [E] tensor of token counts per expert.
@@ -193,10 +201,12 @@ class LossFreeRouter(torch.nn.Module):
         c_avg = total.float() / self.args.moe_num_experts
         error = c_avg - c
 
-        # Softmax gate: proportional update b[i] += u * e[i].
-        # No clamp — the proportional error is self-correcting: as bias grows,
-        # the expert attracts more tokens → error shrinks → updates slow down.
-        self.expert_bias.add_(error, alpha=self.bias_update_speed)
+        if self.gate_type == 'sigmoid':
+            # Sigmoid: sign-based update — equal correction for all imbalanced experts.
+            self.expert_bias.add_(error.sign(), alpha=self.bias_update_speed)
+        else:
+            # Softmax: proportional update — self-correcting (no clamp needed).
+            self.expert_bias.add_(error, alpha=self.bias_update_speed)
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata,
                               strict, missing_keys, unexpected_keys,
