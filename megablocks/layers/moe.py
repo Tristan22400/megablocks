@@ -454,13 +454,14 @@ class ParallelMLP(torch.nn.Module):
         x, tokens_per_expert = self.forward_fn(
             x, expert_weights, top_experts)
 
-        # Save routing statistics for loss computation and/or bias updates.
-        # For 'loss_free' routing we still need tokens_per_expert to update
-        # the bias; the LB loss value is simply not added to the objective
-        # (handled in the training loop). For 'random' routing, skip entirely.
+        # Save routing statistics for loss computation, bias updates, and
+        # expert-assignment logging (MaxVio, token counts).
+        # All routing types save stats so that the training loop can log
+        # expert utilisation metrics uniformly.
         routing_type = getattr(self.args, 'moe_routing_type', 'learned')
-        if self.training and routing_type != 'random':
-            if self.args.moe_loss_weight > 0 or routing_type == 'loss_free':
+        if self.training:
+            if (self.args.moe_loss_weight > 0
+                    or routing_type in ('loss_free', 'random')):
                 save_load_balancing_loss((tokens_per_expert, scores, logits))
 
         x = x.view(in_shape)
