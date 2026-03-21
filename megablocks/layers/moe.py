@@ -569,23 +569,15 @@ class MoE(torch.nn.Module):
         # Compute the experts.
         out = self.experts(x, scores, logits, expert_weights, top_experts)
 
-        # For loss-free routing, update the additive bias using the observed
-        # token-to-expert distribution. The bias is detached from the graph
-        # so this has no effect on gradients.
+        # For loss-free routing, stash the token counts for deferred batched
+        # bias update (single all-reduce across all layers instead of one per
+        # layer).  The actual update is triggered by the training loop after
+        # the full forward pass via `batched_update_bias()`.
         if (self.training
                 and hasattr(self.router, 'update_bias')
                 and len(_LOAD_BALANCING_LOSS) > 0):
             tokens_per_expert = _LOAD_BALANCING_LOSS[-1][0]
-            if getattr(self.router, '_profile_update_bias', False):
-                import time as _time
-                torch.cuda.synchronize()
-                _t0 = _time.perf_counter()
-                self.router.update_bias(tokens_per_expert.clone())
-                torch.cuda.synchronize()
-                _t1 = _time.perf_counter()
-                self.router._last_update_bias_ms = (_t1 - _t0) * 1000
-            else:
-                self.router.update_bias(tokens_per_expert.clone())
+            self.router._pending_tokens = tokens_per_expert.clone()
 
         if self.shared_expert is not None:
             shared_expert_out = self.shared_expert(x)

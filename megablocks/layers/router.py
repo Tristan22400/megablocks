@@ -204,6 +204,21 @@ class LossFreeRouter(torch.nn.Module):
         # Proportional update for both gate types: b[i] += u * (c_avg - c[i]).
         self.expert_bias.add_(error, alpha=self.bias_update_speed)
 
+    @torch.no_grad()
+    def update_bias_local(self, tokens_per_expert: torch.Tensor):
+        """Update expert bias from *already-reduced* token counts.
+
+        Same as update_bias but skips the all-reduce (caller is responsible
+        for reducing token counts across ranks beforehand).
+        """
+        total = tokens_per_expert.sum()
+        if total == 0:
+            return
+        c = tokens_per_expert.float()
+        c_avg = total.float() / self.args.moe_num_experts
+        error = c_avg - c
+        self.expert_bias.add_(error, alpha=self.bias_update_speed)
+
     def _load_from_state_dict(self, state_dict, prefix, local_metadata,
                               strict, missing_keys, unexpected_keys,
                               error_msgs):
