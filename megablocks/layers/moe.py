@@ -577,7 +577,12 @@ class MoE(torch.nn.Module):
                 and hasattr(self.router, 'update_bias')
                 and len(_LOAD_BALANCING_LOSS) > 0):
             tokens_per_expert = _LOAD_BALANCING_LOSS[-1][0]
-            self.router._pending_tokens = tokens_per_expert.clone()
+            # Accumulate across micro-batches (not overwrite) so the batched
+            # update in the training loop sees the full-batch token distribution.
+            if hasattr(self.router, '_pending_tokens'):
+                self.router._pending_tokens += tokens_per_expert
+            else:
+                self.router._pending_tokens = tokens_per_expert.clone()
 
         if self.shared_expert is not None:
             shared_expert_out = self.shared_expert(x)
