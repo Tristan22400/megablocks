@@ -8,9 +8,11 @@ from megablocks.layers.arguments import Arguments
 import megablocks.ops as ops
 import numpy as np
 import torch
+import torch.distributed as dist
 
 
 _LOAD_BALANCING_LOSS = []
+_PENDING_ROUTERS = []
 
 
 def save_load_balancing_loss(loss):
@@ -26,6 +28,26 @@ def get_load_balancing_loss():
 def clear_load_balancing_loss():
     global _LOAD_BALANCING_LOSS
     _LOAD_BALANCING_LOSS.clear()
+
+
+def flush_loss_free_bias_updates():
+    """Flush accumulated bias updates for all loss-free routers.
+
+    Batches per-layer token counts into a single all-reduce, then applies
+    local bias updates.  Must be called once per training step, after the
+    full forward pass (all micro-batches).
+    """
+    global _PENDING_ROUTERS
+    if not _PENDING_ROUTERS:
+        return
+    pending = [r._pending_tokens for r in _PENDING_ROUTERS]
+    stacked = torch.stack(pending)  # (n_layers, n_experts)
+    if dist.is_initialized() and dist.get_world_size() > 1:
+        dist.all_reduce(stacked, op=dist.ReduceOp.SUM)
+    for rtr, reduced_tokens in zip(_PENDING_ROUTERS, stacked):
+        rtr.update_bias_local(reduced_tokens)
+        del rtr._pending_tokens
+    _PENDING_ROUTERS.clear()
 
 
 def batched_load_balancing_loss(args : Arguments):
@@ -570,19 +592,17 @@ class MoE(torch.nn.Module):
         out = self.experts(x, scores, logits, expert_weights, top_experts)
 
         # For loss-free routing, stash the token counts for deferred batched
-        # bias update (single all-reduce across all layers instead of one per
-        # layer).  The actual update is triggered by the training loop after
-        # the full forward pass via `batched_update_bias()`.
+        # bias update.  Accumulated across micro-batches; flushed by the
+        # training loop via flush_loss_free_bias_updates().
         if (self.training
                 and hasattr(self.router, 'update_bias')
                 and len(_LOAD_BALANCING_LOSS) > 0):
             tokens_per_expert = _LOAD_BALANCING_LOSS[-1][0]
-            # Accumulate across micro-batches (not overwrite) so the batched
-            # update in the training loop sees the full-batch token distribution.
             if hasattr(self.router, '_pending_tokens'):
                 self.router._pending_tokens += tokens_per_expert
             else:
                 self.router._pending_tokens = tokens_per_expert.clone()
+                _PENDING_ROUTERS.append(self.router)
 
         if self.shared_expert is not None:
             shared_expert_out = self.shared_expert(x)
