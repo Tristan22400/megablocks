@@ -126,7 +126,7 @@ class LossFreeRouter(torch.nn.Module):
         # Bias update rate u (Algorithm 1, Wang et al. 2024).
         # Paper optimal: u = 0.001.
         speed = getattr(args, 'moe_bias_update_speed', None)
-        self.bias_update_speed = speed if speed is not None else 1.0
+        self.bias_update_speed = speed if speed is not None else 10.0
 
         # Profiling: set _profile_update_bias = True to measure update_bias timing.
         self._profile_update_bias = False
