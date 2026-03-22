@@ -182,7 +182,7 @@ class LossFreeRouter(torch.nn.Module):
     def update_bias(self, tokens_per_expert: torch.Tensor):
         """Update expert bias from batch load (Algorithm 1, Wang et al. 2024).
 
-        Proportional update: b[i] += u * (c_avg - c[i]) for both gate types.
+        Constant update: b[i] += u * sign(c_avg - c[i]).
 
         Args:
             tokens_per_expert: [E] tensor of token counts per expert.
@@ -201,8 +201,8 @@ class LossFreeRouter(torch.nn.Module):
         c_avg = total.float() / self.args.moe_num_experts
         error = c_avg - c
 
-        # Proportional update for both gate types: b[i] += u * (c_avg - c[i]).
-        self.expert_bias.add_(error, alpha=self.bias_update_speed)
+        # Constant update (Algorithm 1, step 4): b[i] += u * sign(e[i]).
+        self.expert_bias.add_(error.sign(), alpha=self.bias_update_speed)
 
     @torch.no_grad()
     def update_bias_local(self, tokens_per_expert: torch.Tensor):
@@ -217,7 +217,7 @@ class LossFreeRouter(torch.nn.Module):
         c = tokens_per_expert.float()
         c_avg = total.float() / self.args.moe_num_experts
         error = c_avg - c
-        self.expert_bias.add_(error, alpha=self.bias_update_speed)
+        self.expert_bias.add_(error.sign(), alpha=self.bias_update_speed)
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata,
                               strict, missing_keys, unexpected_keys,
